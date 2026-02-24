@@ -17,6 +17,7 @@ NATIVE_KEYWORDS = [
     "declare",
     "template",
     "let",
+    "enum",
     "struct",
     "fn",
     "class",

@@ -5,6 +5,7 @@ from llvmlite import ir, binding
 import ctypes
 import os
 
+
 class COMPILER:
     def __init__(self, ast: list, file: str = ""):
         self.ast = ast
@@ -14,6 +15,7 @@ class COMPILER:
         self.context = []
         self.strings = {}
         self.functions = {}
+        self.enums = {}
         self.module = None
         self.if_count = 0
         self.loop_count = 0
@@ -31,7 +33,7 @@ class COMPILER:
             "f64": ir.DoubleType(),
             "bool": ir.IntType(1),
             "string": ir.IntType(8).as_pointer(),
-            "void": ir.VoidType()
+            "void": ir.VoidType(),
         }
 
         self.init_bindings()
@@ -49,12 +51,14 @@ class COMPILER:
 
         target_triple = binding.get_default_triple()
         target = binding.Target.from_triple(target_triple)
-        target_machine = target.create_target_machine(codemodel='default')
+        target_machine = target.create_target_machine(codemodel="default")
         obj = target_machine.emit_object(llvm_module)
 
         extension = ".obj" if sys.platform == "win32" else ".o"
         os.makedirs("_azure_temp_", exist_ok=True)
-        obj_path = os.path.join("_azure_temp_", os.path.splitext(os.path.basename(name))[0] + extension)        
+        obj_path = os.path.join(
+            "_azure_temp_", os.path.splitext(os.path.basename(name))[0] + extension
+        )
         with open(obj_path, "wb") as f:
             f.write(obj)
             f.close()
@@ -67,7 +71,7 @@ class COMPILER:
     def create_module(self, name: str = "main"):
         self.module = ir.Module(name=name)
         self.module.triple = binding.get_default_triple()
-        self.module.data_layout = binding.Target.from_default_triple().create_target_machine(codemodel='default').target_data # type: ignore
+        self.module.data_layout = binding.Target.from_default_triple().create_target_machine(codemodel="default").target_data  # type: ignore
 
     def get_context(self):
         if len(self.context) > 0:
@@ -115,7 +119,10 @@ class COMPILER:
                 return self.compile_binary(node)
             case "IntegerLiteral" | "HexLiteral" | "OctalLiteral" | "BinaryLiteral":
                 context = self.get_context()
-                if context and ("VariableDeclaration" in context["kind"] or "TypeCast" in context["kind"]):
+                if context and (
+                    "VariableDeclaration" in context["kind"]
+                    or "TypeCast" in context["kind"]
+                ):
                     return ir.Constant(context["type"], node["value"])
                 else:
                     return ir.Constant(ir.IntType(32), node["value"])
@@ -124,7 +131,9 @@ class COMPILER:
                 context = self.get_context()
                 if context != None and "ReturnPointerVariable" in context["kind"]:
                     return stack_frame["variables"][node["value"]]["memory"]
-                return stack_frame["builder"].load(stack_frame["variables"][node["value"]]["memory"])
+                return stack_frame["builder"].load(
+                    stack_frame["variables"][node["value"]]["memory"]
+                )
             case "StringLiteral":
                 return self.compile_string(node)
             case "ArrayLiteral":
@@ -153,6 +162,8 @@ class COMPILER:
                 return self.compile_struct_literal(node)
             case "MemberExpression":
                 return self.compile_struct_index(node)
+            case "EnumDeclaration":
+                return self.compile_enum(node)
 
     def retrieve_basic_type(self, node):
         if node["kind"] == "BaseType":
@@ -167,16 +178,17 @@ class COMPILER:
     def compile_variable(self, node):
         stack_frame = self.get_current_stack_frame(node["line"])
         variable_type = self.compile_type(node["type"], node["value"])
-        self.context.append({
-            "kind": "VariableDeclaration",
-            "type": variable_type,
-            "raw": node["type"]
-        })
-        stack_frame["variables"][node["name"]] = {"memory": stack_frame["builder"].alloca(
-            variable_type, name=node["name"]
-        ), "type": node["type"]}
+        self.context.append(
+            {"kind": "VariableDeclaration", "type": variable_type, "raw": node["type"]}
+        )
+        stack_frame["variables"][node["name"]] = {
+            "memory": stack_frame["builder"].alloca(variable_type, name=node["name"]),
+            "type": node["type"],
+        }
         value = self.compile_stmt(node["value"])
-        stack_frame["builder"].store(value, stack_frame["variables"][node["name"]]["memory"])
+        stack_frame["builder"].store(
+            value, stack_frame["variables"][node["name"]]["memory"]
+        )
         self.context.pop()
 
     def compile_function(self, node):
@@ -184,14 +196,14 @@ class COMPILER:
         params = []
         for param in node["params"]:
             params.append(self.compile_type(param["type"]))
-            
+
         func_type = ir.FunctionType(return_type, params)
         param_index = 0
         for param in node["params"]:
             func_type.args[param_index].name = param["name"]
             param_index += 1
         main_func = ir.Function(self.module, func_type, name=node["name"])
-        
+
         block = main_func.append_basic_block(name="entry")
         builder = ir.IRBuilder(block)
         self.functions[node["name"]] = main_func
@@ -200,14 +212,17 @@ class COMPILER:
         for body_node in node["body"]:
             self.compile_stmt(body_node)
 
-        if len(node["body"]) == 0 or node["body"][len(node["body"]) - 1]["kind"] != "ReturnExpression":
+        if (
+            len(node["body"]) == 0
+            or node["body"][len(node["body"]) - 1]["kind"] != "ReturnExpression"
+        ):
             builder.ret(ir.Constant(return_type, 0))
 
         self.stack.pop()
 
     def compile_binary(self, node):
         left = self.compile_stmt(node["left"])
-        right =  self.compile_stmt(node["right"])
+        right = self.compile_stmt(node["right"])
         stack_frame = self.get_current_stack_frame(node["line"])
         result = None
         match node["operator"]:
@@ -216,13 +231,17 @@ class COMPILER:
             case "-":
                 result = stack_frame["builder"].sub(left, right)
             case "==" | "!=" | ">" | "<" | ">=" | "<=":
-                if isinstance(left.type, ir.IntType): # type: ignore
-                    result =  stack_frame["builder"].icmp_signed(node["operator"], left, right) 
-                elif isinstance(left.type, ir.FloatType) or isinstance(left.type, ir.DoubleType): # type: ignore
-                    result =  stack_frame["builder"].fcmp_ordered(node["operator"], left, right)
+                if isinstance(left.type, ir.IntType):  # type: ignore
+                    result = stack_frame["builder"].icmp_signed(
+                        node["operator"], left, right
+                    )
+                elif isinstance(left.type, ir.FloatType) or isinstance(left.type, ir.DoubleType):  # type: ignore
+                    result = stack_frame["builder"].fcmp_ordered(
+                        node["operator"], left, right
+                    )
         return result
-    
-    def compile_string(self, node):   
+
+    def compile_string(self, node):
         stack_frame = self.get_current_stack_frame(node["line"])
         value = node["value"][1:-1]
         context = self.get_context()
@@ -230,21 +249,25 @@ class COMPILER:
         if value in self.strings:
             if context and "ReturnPointerVariable" in context["kind"]:
                 return self.strings[value]
-            return stack_frame["builder"].gep(self.strings[value], [zero, zero], inbounds=True)
-        
+            return stack_frame["builder"].gep(
+                self.strings[value], [zero, zero], inbounds=True
+            )
+
         encoded = (value + "\0").encode("utf-8")
         string_type = ir.ArrayType(ir.IntType(8), len(encoded))
-        
-        global_var = ir.GlobalVariable(self.module, string_type, name=f".str.{len(self.strings)}")
+
+        global_var = ir.GlobalVariable(
+            self.module, string_type, name=f".str.{len(self.strings)}"
+        )
         global_var.global_constant = True
         global_var.linkage = "internal"
-        global_var.initializer = ir.Constant(string_type, bytearray(encoded)) # type: ignore
-        
+        global_var.initializer = ir.Constant(string_type, bytearray(encoded))  # type: ignore
+
         self.strings[value] = global_var
         if context and "ReturnPointerVariable" in context["kind"]:
-                return global_var
+            return global_var
         return stack_frame["builder"].gep(global_var, [zero, zero], inbounds=True)
-    
+
     def compile_array(self, node):
         stack_frame = self.get_current_stack_frame(node["line"])
         builder = stack_frame["builder"]
@@ -257,11 +280,9 @@ class COMPILER:
 
         element_type = self.compile_type(context["raw"]["of"])
 
-        self.context.append({
-            "kind": "TypeCast",
-            "type": element_type,
-            "raw": context["raw"]["of"]
-        })
+        self.context.append(
+            {"kind": "TypeCast", "type": element_type, "raw": context["raw"]["of"]}
+        )
 
         for element in node["elements"]:
             elements.append(self.compile_stmt(element))
@@ -279,13 +300,17 @@ class COMPILER:
             builder.store(elem, element_pointer)
 
         return builder.load(arr_ptr)
-    
+
     def compile_declare_foreign(self, node):
         if node["stmt"]["kind"] == "VariableDeclaration":
-            counter = ir.GlobalVariable(self.module, self.compile_type(node["stmt"]["type"]), name=node["stmt"]["name"])
+            counter = ir.GlobalVariable(
+                self.module,
+                self.compile_type(node["stmt"]["type"]),
+                name=node["stmt"]["name"],
+            )
             counter.linkage = "external"
             counter.initializer = None
-        elif node["stmt"]["kind"] == "FunctionDeclaration":     
+        elif node["stmt"]["kind"] == "FunctionDeclaration":
             args = []
             varadic = False
             for arg in node["stmt"]["params"]:
@@ -294,8 +319,7 @@ class COMPILER:
                     break
                 args.append(self.compile_type(arg["type"]))
             func_type = ir.FunctionType(
-                self.compile_type(node["stmt"]["return_type"]),
-                args, var_arg=varadic
+                self.compile_type(node["stmt"]["return_type"]), args, var_arg=varadic
             )
 
             param_index = 0
@@ -317,7 +341,7 @@ class COMPILER:
             args.append(self.compile_stmt(arg))
 
         return stack_frame["builder"].call(function, args)
-    
+
     def compile_index_expression(self, node):
         self.context.append({"kind": "ReturnPointerVariable"})
         parent = self.compile_stmt(node["parent"])
@@ -328,7 +352,9 @@ class COMPILER:
 
         for chain_node in node["child"]:
             child = self.compile_stmt(chain_node)
-            pointer = stack_frame["builder"].gep(parent, [ir.Constant(ir.IntType(32), 0), child])
+            pointer = stack_frame["builder"].gep(
+                parent, [ir.Constant(ir.IntType(32), 0), child]
+            )
             parent = pointer
 
         if context and context["kind"] == "ReturnPointerVariable":
@@ -345,14 +371,14 @@ class COMPILER:
                 zero = ir.Constant(value.type, 0)
                 return stack_frame["builder"].sub(zero, value)
 
-            elif isinstance(value.type, ir.FloatType) or isinstance(value.type, ir.DoubleType):
+            elif isinstance(value.type, ir.FloatType) or isinstance(
+                value.type, ir.DoubleType
+            ):
                 return stack_frame["builder"].fneg(value)
 
             else:
                 self.error_class.compiler_error(
-                    "Cannot apply unary '-' to this type!",
-                    self.file,
-                    node["line"]
+                    "Cannot apply unary '-' to this type!", self.file, node["line"]
                 )
                 self.error_class.dump()
         elif node["operator"] == "&":
@@ -360,19 +386,19 @@ class COMPILER:
             value = self.compile_stmt(node["value"])
             self.context.pop()
             return value
-        
+
     def compile_dereference(self, node):
         # self.context.append({"kind": "ReturnPointerVariable"})
         value = self.compile_stmt(node["value"])
         # self.context.pop()
         stack_frame = self.get_current_stack_frame(node["line"])
         return stack_frame["builder"].load(value)
-    
+
     def compile_assignment(self, node):
         self.context.append({"kind": "ReturnPointerVariable"})
         left = self.compile_stmt(node["left"])
         self.context.pop()
-        right =  self.compile_stmt(node["right"])
+        right = self.compile_stmt(node["right"])
         stack_frame = self.get_current_stack_frame(node["line"])
         stack_frame["builder"].store(right, left)
 
@@ -392,9 +418,9 @@ class COMPILER:
                 body_has_branch = True
             self.compile_stmt(body_node)
         if not body_has_branch:
-            stack_frame["builder"].branch(merge_block)           
-        
-        stack_frame["builder"].position_at_start(else_block)  
+            stack_frame["builder"].branch(merge_block)
+
+        stack_frame["builder"].position_at_start(else_block)
         if node["else_body"]:
             else_body_has_branch = False
             for body_node in node["else_body"]:
@@ -402,25 +428,31 @@ class COMPILER:
                     else_body_has_branch = False
                 self.compile_stmt(body_node)
             if not else_body_has_branch:
-                stack_frame["builder"].branch(merge_block)   
+                stack_frame["builder"].branch(merge_block)
         else:
             stack_frame["builder"].branch(merge_block)
         stack_frame["builder"].position_at_start(merge_block)
-        
+
     def compile_loop(self, node):
         stack_frame = self.get_current_stack_frame(node["line"])
-        loop_block = stack_frame["builder"].append_basic_block(f"loop_{self.loop_count}")
-        loop_end = stack_frame["builder"].append_basic_block(f"loop_end_{self.loop_count}")
+        loop_block = stack_frame["builder"].append_basic_block(
+            f"loop_{self.loop_count}"
+        )
+        loop_end = stack_frame["builder"].append_basic_block(
+            f"loop_end_{self.loop_count}"
+        )
         stack_frame["builder"].branch(loop_block)
 
         self.loop_count += 1
 
         stack_frame["builder"].position_at_start(loop_block)
-        self.context.append({
-            "kind": "LoopStatement",
-            "start": loop_block,
-            "end": loop_end,
-        })
+        self.context.append(
+            {
+                "kind": "LoopStatement",
+                "start": loop_block,
+                "end": loop_end,
+            }
+        )
         body_has_branch = False
         for body_node in node["body"]:
             if body_node["kind"] == "JumpStatement":
@@ -430,7 +462,7 @@ class COMPILER:
         if not body_has_branch:
             stack_frame["builder"].branch(loop_block)
         stack_frame["builder"].position_at_start(loop_end)
-    
+
     def compile_break_continue(self, node):
         stack_frame = self.get_current_stack_frame(node["line"])
         context = self.get_context()
@@ -441,7 +473,6 @@ class COMPILER:
             elif node["value"] == "continue":
                 stack_frame["builder"].branch(context["start"])
 
-
     def compile_struct(self, node):
         struct_type = ir.global_context.get_identified_type(node["identifier"])
         members = []
@@ -449,11 +480,13 @@ class COMPILER:
         for member in node["members"]:
             member_type = self.compile_type(member["type"])
             members.append(member_type)
-            members_with_name.append({"name": member["identifier"], "type": member["type"]}) 
+            members_with_name.append(
+                {"name": member["identifier"], "type": member["type"]}
+            )
         struct_type.set_body(*members)
         self.structs[node["identifier"]] = {
             "type": struct_type,
-            "members": members_with_name
+            "members": members_with_name,
         }
 
     def compile_struct_literal(self, node):
@@ -463,16 +496,18 @@ class COMPILER:
         value = []
 
         for index, element in enumerate(node["elements"]):
-            self.context.append({
-                "kind": ["TypeCast", "ReturnPointerVariable"],
-                "type": self.compile_type(context["raw"]["members"][index]),
-                "raw": context["raw"]["members"][index]
-            })
+            self.context.append(
+                {
+                    "kind": ["TypeCast", "ReturnPointerVariable"],
+                    "type": self.compile_type(context["raw"]["members"][index]),
+                    "raw": context["raw"]["members"][index],
+                }
+            )
             compiled_element = self.compile_stmt(element)
             value.append(compiled_element)
             self.context.pop()
         return ir.Constant(context["type"], value)
-    
+
     def compile_struct_index(self, node):
         self.context.append({"kind": "ReturnPointerVariable"})
         parent = self.compile_stmt(node["parent"])
@@ -484,11 +519,11 @@ class COMPILER:
         struct_name = None
 
         if isinstance(struct_type, ir.PointerType):
-            struct_type = struct_type.pointee # type: ignore
+            struct_type = struct_type.pointee  # type: ignore
 
         if isinstance(struct_type, ir.IdentifiedStructType):
             struct_name = struct_type.name
-        
+
         for chain_node in node["child"]:
             child = chain_node["value"]
             index = 0
@@ -499,12 +534,63 @@ class COMPILER:
                     break
                 index += 1
             if found == False:
-                self.error_class.compiler_error(f"{child} is not a member of {struct_name}!", self.file, chain_node["line"])
+                self.error_class.compiler_error(
+                    f"{child} is not a member of {struct_name}!",
+                    self.file,
+                    chain_node["line"],
+                )
                 self.error_class.dump()
-            pointer = stack_frame["builder"].gep(parent, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)])
+            pointer = stack_frame["builder"].gep(
+                parent,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)],
+            )
             parent = pointer
 
         if context and context["kind"] == "ReturnPointerVariable":
             return pointer
         else:
             return stack_frame["builder"].load(pointer)
+
+    def compile_enum(self, node):
+        enum_data = {}
+        for enum in node["enums"]:
+            enum_data[enum["identifier"]] = self.llvm_base_types["void"]
+            if len(enum["type"]) == 1:
+                enum_data[enum["identifier"]] = self.compile_type(enum["type"][0])
+            elif len(enum["type"]) > 1:
+                types = []
+                for type in enum["type"]:
+                    types.append(self.compile_type(type))
+                enum_data[enum["identifier"]] = ir.LiteralStructType(types)
+
+        enum_type = ir.global_context.get_identified_type(node["identifier"])
+        amount = len(node["enums"])
+        tag_type = None
+        if amount <= 127:
+            tag_type = ir.IntType(8)
+        elif amount <= 32767:
+            tag_type = ir.IntType(16)
+        elif amount <= 2147483647:
+            tag_type = ir.IntType(32)
+        elif amount <= 9223372036854775807:
+            tag_type = ir.IntType(64)
+
+        target_data = self.module.data_layout # type: ignore
+
+        max_size = 0
+        max_align = 1
+
+        for variant in enum_data:
+            size = variant.get_abi_size(target_data)
+            align = variant.get_abi_alignment(target_data)
+
+            max_size = max(max_size, size)
+            max_align = max(max_align, align)  
+
+        if max_size == 0:
+            payload = ir.LiteralStructType([])
+        else:
+            payload = ir.ArrayType(ir.IntType(8), max_size)  
+
+        enum_type.set_body(tag_type, payload)
+        self.enums[node["identifier"]] = enum_data

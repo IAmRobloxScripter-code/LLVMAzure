@@ -101,6 +101,8 @@ class PARSER:
                     "value": token["value"],
                     "line": token["line"],
                 }
+            case "enum":
+                return self.parse_enum()
 
     def parse_stmt(self):
         self.expect("(")
@@ -127,6 +129,8 @@ class PARSER:
                     node = self.parse_assignment()
                 case "->":
                     node = self.parse_struct_index()
+                case ":":
+                    node = self.parse_enum_index()
         self.expect(")")
         return node
 
@@ -519,6 +523,45 @@ class PARSER:
             "right": right,
             "line": line,
         }
+    
+    def parse_enum(self):
+        line = self.eat()["line"]
+        identifier = self.expect(kind="identifier")["value"]
+        enums = []
+        while (
+            len(self.tokens) > 0
+            and self.at()["kind"] != "EOF"
+            and self.at()["value"] != ")"
+        ):
+            enum_line = self.expect("(")["line"]
+            enum_identifier = self.expect(kind="identifier")["value"]
+            enum_types = []
+            while (
+                len(self.tokens) > 0
+                and self.at()["kind"] != "EOF"
+                and self.at()["value"] != ")"
+            ):
+                enum_types.append(self.parse_type())
+            self.expect(")")
+            enums.append(
+                {
+                    "kind": "EnumMemberDeclaration",
+                    "identifier": enum_identifier,
+                    "type": enum_types,
+                    "line": enum_line,
+                }
+            )
+        self.types.append(identifier)
+        return {
+            "kind": "EnumDeclaration",
+            "identifier": identifier,
+            "enums": enums,
+            "line": line,
+        }
+
+    def parse_enum_index(self):
+        line = self.eat()["line"]
+        
 
     def parse_primary(self):
         token = self.at()

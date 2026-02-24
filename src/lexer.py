@@ -78,6 +78,8 @@ class LEXER:
                 self.push_token(self.make_token(self.eat()))
             elif char == "+":
                 self.push_token(self.make_token(self.eat()))
+            elif char == ":":
+                self.push_token(self.make_token(self.eat()))
             elif char == "-":
                 if self.peek() == ">":
                     self.eat()
