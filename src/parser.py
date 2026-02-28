@@ -103,6 +103,8 @@ class PARSER:
                 }
             case "enum":
                 return self.parse_enum()
+            case "impl":
+                return self.parse_impl()
 
     def parse_stmt(self):
         self.expect("(")
@@ -160,6 +162,33 @@ class PARSER:
                 
                 for member in self.structs[token["value"]]:
                     node["members"].append(member["type"])
+            elif token["value"] == "function":
+                self.eat()
+                self.expect("(")
+                return_type = self.parse_type()
+                params = []
+                self.expect("(")
+                while (
+                    len(self.tokens) > 0
+                    and self.at()["kind"] != "EOF"
+                    and self.at()["value"] != ")"
+                ):  
+                    if self.at()["kind"] == "varadic":
+                        params.append({
+                            "kind": "BaseType",
+                            "type": "varadic",
+                            "line": self.eat()["line"],
+                        })
+                    else:
+                        params.append(self.parse_type())
+                self.expect(")")
+                self.expect(")")
+                node = {
+                    "kind": "FunctionType",
+                    "return": return_type,
+                    "params": params,
+                    "line": token["line"]
+                }
             else:
                 node = {
                     "kind": "BaseType",
@@ -401,7 +430,7 @@ class PARSER:
     def parse_call(self):
         line = self.eat()["line"]
         self.expect(")")
-        identifier = self.expect(kind="identifier")["value"]
+        identifier = self.parse_stmt_or_expr()
         args = []
         while (
             len(self.tokens) > 0
@@ -561,7 +590,34 @@ class PARSER:
 
     def parse_enum_index(self):
         line = self.eat()["line"]
-        
+        parent = self.expect(kind="identifier")["value"]
+        child = self.expect(kind="identifier")["value"]
+        constructor_values = []
+        while (
+            len(self.tokens) > 0
+            and self.at()["kind"] != "EOF"
+            and self.at()["value"] != ")"
+        ):
+            constructor_values.append(self.parse_stmt_or_expr())
+        return {
+            "kind": "EnumIndexExpression",
+            "parent": parent,
+            "child": child,
+            "args": constructor_values,
+            "line": line,
+        }
+    
+    def parse_impl(self):
+        line = self.eat()["line"]
+        struct = self.expect(kind="identifier")["value"]
+        function = self.parse_stmt()
+
+        return {
+            "kind": "ImplStatement",
+            "struct": struct,
+            "method": function,
+            "line": line
+        }
 
     def parse_primary(self):
         token = self.at()

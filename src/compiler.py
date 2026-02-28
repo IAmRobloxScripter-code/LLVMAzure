@@ -96,6 +96,17 @@ class COMPILER:
                 return ir.ArrayType(element, node["size"])
         elif node["kind"] == "StructType":
             return self.structs[node["name"]]["type"]
+        elif node["kind"] == "FunctionType":
+            return_type = self.compile_type(node["return"])
+            param_types = []
+            var_args = False
+            for param in node["params"]:
+                if param == "varadic" or param["type"] == "varadic":
+                    var_args = True
+                    break
+                param_types.append(self.compile_type(param))
+    
+            return ir.FunctionType(return_type, param_types, var_arg=var_args)
         else:
             self.error_class.compiler_error("Uknown type!", self.file, node["line"])
             self.error_class.dump()
@@ -129,6 +140,9 @@ class COMPILER:
             case "IdentifierLiteral":
                 stack_frame = self.get_current_stack_frame(node["line"])
                 context = self.get_context()
+                if node["value"] in self.functions:
+                    return self.functions[node["value"]]
+
                 if context != None and "ReturnPointerVariable" in context["kind"]:
                     return stack_frame["variables"][node["value"]]["memory"]
                 return stack_frame["builder"].load(
@@ -164,6 +178,8 @@ class COMPILER:
                 return self.compile_struct_index(node)
             case "EnumDeclaration":
                 return self.compile_enum(node)
+            case "EnumIndexExpression":
+                return self.compile_enum_index(node)
 
     def retrieve_basic_type(self, node):
         if node["kind"] == "BaseType":
@@ -221,9 +237,34 @@ class COMPILER:
         self.stack.pop()
 
     def compile_binary(self, node):
-        left = self.compile_stmt(node["left"])
-        right = self.compile_stmt(node["right"])
         stack_frame = self.get_current_stack_frame(node["line"])
+        left = None
+        right = None
+        if node["operator"] == "==":
+            self.context.append({
+                "kind": ["ReturnPointerVariable"]
+            })
+            left = self.compile_stmt(node["left"])
+            self.context.pop()
+            self.context.append({
+                "kind": ["CmpEq"],
+                "left": left
+            })
+            right = self.compile_stmt(node["right"])
+            self.context.pop()
+            if node["right"]["kind"] == "EnumIndexExpression":
+                left = stack_frame["builder"].load(stack_frame["builder"].gep(
+                    left,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+                ))
+            
+            # left = stack_frame["builder"].gep(
+            #         left,
+            #         [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            #     )
+        else:
+            left = self.compile_stmt(node["left"])
+            right = self.compile_stmt(node["right"])
         result = None
         match node["operator"]:
             case "+":
@@ -334,7 +375,7 @@ class COMPILER:
 
     def compile_call(self, node):
         stack_frame = self.get_current_stack_frame(node["line"])
-        function = self.functions[node["function"]]
+        function = self.compile_stmt(node["function"])
         args = []
 
         for arg in node["args"]:
@@ -553,15 +594,29 @@ class COMPILER:
 
     def compile_enum(self, node):
         enum_data = {}
+        index = 0
         for enum in node["enums"]:
-            enum_data[enum["identifier"]] = self.llvm_base_types["void"]
+            enum_data[enum["identifier"]] = {
+                "type": self.llvm_base_types["void"],
+                "tag": index,
+                "raw": {"kind": "BaseType", "type": "void"},
+            }
             if len(enum["type"]) == 1:
-                enum_data[enum["identifier"]] = self.compile_type(enum["type"][0])
+                enum_data[enum["identifier"]] = {
+                    "type": self.compile_type(enum["type"][0]),
+                    "tag": index,
+                    "raw": enum["type"][0],
+                }
             elif len(enum["type"]) > 1:
                 types = []
                 for type in enum["type"]:
                     types.append(self.compile_type(type))
-                enum_data[enum["identifier"]] = ir.LiteralStructType(types)
+                enum_data[enum["identifier"]] = {
+                    "type": ir.LiteralStructType(types),
+                    "tag": index,
+                    "raw": enum["type"],
+                }
+            index += 1
 
         enum_type = ir.global_context.get_identified_type(node["identifier"])
         amount = len(node["enums"])
@@ -575,22 +630,140 @@ class COMPILER:
         elif amount <= 9223372036854775807:
             tag_type = ir.IntType(64)
 
-        target_data = self.module.data_layout # type: ignore
+        target_data = self.module.data_layout  # type: ignore
 
         max_size = 0
         max_align = 1
 
-        for variant in enum_data:
-            size = variant.get_abi_size(target_data)
-            align = variant.get_abi_alignment(target_data)
+        for variant in enum_data.values():
+            size = 0
+            align = 0
+            if not isinstance(variant["type"], ir.VoidType):
+                size = variant["type"].get_abi_size(target_data)
+                align = variant["type"].get_abi_alignment(target_data)
 
             max_size = max(max_size, size)
-            max_align = max(max_align, align)  
+            max_align = max(max_align, align)
 
         if max_size == 0:
             payload = ir.LiteralStructType([])
         else:
-            payload = ir.ArrayType(ir.IntType(8), max_size)  
+            payload = ir.ArrayType(ir.IntType(8), max_size)
 
         enum_type.set_body(tag_type, payload)
-        self.enums[node["identifier"]] = enum_data
+        self.enums[node["identifier"]] = {
+            "data": enum_data,
+            "type": enum_type,
+            "raw": [tag_type, payload],
+        }
+        self.llvm_base_types[node["identifier"]] = enum_type
+
+    def compile_enum_index(self, node):
+        stack_frame = self.get_current_stack_frame(node["line"])
+        context = self.get_context()
+        enum_data = self.enums[node["parent"]]
+        enum_args = node["args"]
+        child = enum_data["data"][node["child"]]
+
+        if context and "CmpEq" in context["kind"]:
+            left_value = context["left"]
+            tag_pointer = stack_frame["builder"].gep(
+                left_value,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
+            payload_pointer = stack_frame["builder"].gep(
+                left_value,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
+            )
+
+            payload = stack_frame["builder"].load(payload_pointer)
+            if isinstance(child["type"], (ir.LiteralStructType, ir.IdentifiedStructType)):
+                index = 0
+                typed_pointer = stack_frame["builder"].bitcast(
+                    payload_pointer,
+                    child["type"].as_pointer()
+                )
+                for arg in enum_args:
+                    stack_frame["variables"][arg["value"]] = {
+                        "memory": stack_frame["builder"].alloca(
+                            self.compile_type(child["raw"][index]),
+                            name=arg["value"],
+                        ),
+                        "type": child["raw"][index],
+                    }
+                    value_pointer = stack_frame["builder"].gep(
+                        typed_pointer,
+                        [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)],
+                    )
+                    value = stack_frame["builder"].load(value_pointer)
+    
+                    stack_frame["builder"].store(
+                        value, stack_frame["variables"][arg["value"]]["memory"]
+                    )
+                    index += 1
+            else:
+                stack_frame["variables"][enum_args[0]["value"]] = {
+                    "memory": stack_frame["builder"].alloca(
+                        child["type"], name=enum_args[0]["value"]
+                    ),
+                    "type": child["raw"],
+                }
+                typed_pointer = stack_frame["builder"].bitcast(
+                    payload_pointer,
+                    child["type"].as_pointer()
+                )
+                stack_frame["builder"].store(
+                    stack_frame["builder"].load(typed_pointer), stack_frame["variables"][enum_args[0]["value"]]["memory"]
+                )
+            return ir.Constant(enum_data["raw"][0], child["tag"])
+        enum_pointer = stack_frame["builder"].alloca(enum_data["type"])
+ 
+        tag = 0
+        for name in enum_data["data"]:
+            if name == node["child"]:
+                break
+            tag += 1
+
+        tag_pointer = stack_frame["builder"].gep(
+            enum_pointer,
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+        )
+        stack_frame["builder"].store(ir.Constant(enum_data["raw"][0], tag), tag_pointer)
+        if len(enum_args) > 0 and not isinstance(child["type"], ir.VoidType):
+            payload_pointer = stack_frame["builder"].gep(
+                enum_pointer,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
+            )
+            if len(enum_args) == 1:
+                self.context.append(
+                    {"kind": ["TypeCast"], "type": child["type"], "raw": child["raw"]}
+                )
+                compiled_value = self.compile_stmt(enum_args[0])
+                self.context.pop()
+            else:
+                typed_union_pointer = stack_frame["builder"].bitcast(
+                        payload_pointer,
+                        child["type"].as_pointer()
+                    )
+                for i, arg_node in enumerate(enum_args):
+                    self.context.append(
+                        {"kind": ["TypeCast"], "type": self.compile_type(child["raw"][i]), "raw": child["raw"]}
+                    )
+                    value = self.compile_stmt(arg_node)
+                    self.context.pop()
+                    
+                    field_pointer = stack_frame["builder"].gep(
+                        typed_union_pointer,
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), i),
+                        ],
+                    )
+                    stack_frame["builder"].store(value, field_pointer)
+                compiled_value = stack_frame["builder"].load(typed_union_pointer)
+            cast_pointer = stack_frame["builder"].bitcast(
+                payload_pointer, compiled_value.type.as_pointer()
+            )
+            stack_frame["builder"].store(compiled_value, cast_pointer)
+
+        return stack_frame["builder"].load(enum_pointer)

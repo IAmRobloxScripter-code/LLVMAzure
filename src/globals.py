@@ -12,7 +12,9 @@ NATIVE_TYPES = [
     "f64",
     "bool",
     "string",
+    "function"
 ]
+
 NATIVE_KEYWORDS = [
     "declare",
     "template",
@@ -27,4 +29,5 @@ NATIVE_KEYWORDS = [
     "stop",
     "continue",
     "ret",
+    "impl"
 ]
