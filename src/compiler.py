@@ -214,16 +214,23 @@ class COMPILER:
             params.append(self.compile_type(param["type"]))
 
         func_type = ir.FunctionType(return_type, params)
-        param_index = 0
-        for param in node["params"]:
-            func_type.args[param_index].name = param["name"]
-            param_index += 1
         main_func = ir.Function(self.module, func_type, name=node["name"])
+        param_index = 0
+        variables = {}
+        for param in node["params"]:
+            main_func.args[param_index].name = param["name"]
+            param_index += 1
 
         block = main_func.append_basic_block(name="entry")
         builder = ir.IRBuilder(block)
+        for index, param in enumerate(node["params"]):
+            variables[param["name"]] = {
+                "memory": main_func.args[index],
+                "type": param["type"],
+            }
+        
         self.functions[node["name"]] = main_func
-        self.stack.append({"builder": builder, "variables": {}})
+        self.stack.append({"builder": builder, "variables": variables})
 
         for body_node in node["body"]:
             self.compile_stmt(body_node)
@@ -235,6 +242,7 @@ class COMPILER:
             builder.ret(ir.Constant(return_type, 0))
 
         self.stack.pop()
+        return func_type
 
     def compile_binary(self, node):
         stack_frame = self.get_current_stack_frame(node["line"])
@@ -517,6 +525,7 @@ class COMPILER:
     def compile_struct(self, node):
         struct_type = ir.global_context.get_identified_type(node["identifier"])
         members = []
+        methods = []
         members_with_name = []
         for member in node["members"]:
             member_type = self.compile_type(member["type"])
@@ -524,17 +533,30 @@ class COMPILER:
             members_with_name.append(
                 {"name": member["identifier"], "type": member["type"]}
             )
-        struct_type.set_body(*members)
+
         self.structs[node["identifier"]] = {
             "type": struct_type,
             "members": members_with_name,
+            "methods": methods
         }
+
+        for ast_node in self.ast:
+            if ast_node["kind"] == "ImplStatement" and ast_node["struct"] == node["identifier"]:
+                method_name = f"AZ@{node["identifier"]}_{ast_node["method"]["name"]}"
+                ast_node["method"]["name"] = method_name
+                method_type = self.compile_function(ast_node["method"])
+                methods.append({"name": method_name, "type": method_type})
+                members.append(method_type)
+
+        struct_type.set_body(*members)
 
     def compile_struct_literal(self, node):
         context = self.get_context()
         if context == None:
             return
         value = []
+
+        print(context["type"])
 
         for index, element in enumerate(node["elements"]):
             self.context.append(
@@ -581,6 +603,7 @@ class COMPILER:
                     chain_node["line"],
                 )
                 self.error_class.dump()
+            print(parent)
             pointer = stack_frame["builder"].gep(
                 parent,
                 [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)],
