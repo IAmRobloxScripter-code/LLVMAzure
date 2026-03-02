@@ -9,6 +9,9 @@ class ERROR:
             print(error)
         sys.exit(exit_code)
 
+    def preprocessing_error(self, message: str = "", file: str = "", line: int = 1):
+        self.stack.append(f"[{file}:{line}] Preprocessing Error: {message}")
+
     def lexing_error(self, message: str = "", file: str = "", line: int = 1):
         self.stack.append(f"[{file}:{line}] Lexical Error: {message}")
 

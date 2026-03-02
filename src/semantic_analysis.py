@@ -1,4 +1,3 @@
-import json
 from error import *
 
 
@@ -585,7 +584,7 @@ class SEMANTIC_ANALYSIS:
 
     def analyze_call_expression(self, node):
         fn: dict = self.build_type_from_expr(node["function"])["to"]  # type: ignore
-
+    
         if fn == None:
             self.error_class.semantic_error(
                 f"'{fn["name"]}' is not a function!",
@@ -593,7 +592,10 @@ class SEMANTIC_ANALYSIS:
                 node["line"],
             )
             self.error_class.dump()
+
         less_args_count = len(fn["params"])
+        if node["function"]["kind"] == "MemberExpression":
+            less_args_count -= 1
         if (
             fn["params"][len(fn["params"]) - 1] == "varadic"
         ):

@@ -239,7 +239,10 @@ class COMPILER:
             len(node["body"]) == 0
             or node["body"][len(node["body"]) - 1]["kind"] != "ReturnExpression"
         ):
-            builder.ret(ir.Constant(return_type, 0))
+            if isinstance(return_type, ir.VoidType):
+                builder.ret_void()
+            else:
+                builder.ret(ir.Constant(return_type, 0))
 
         self.stack.pop()
         return func_type
@@ -385,6 +388,12 @@ class COMPILER:
         stack_frame = self.get_current_stack_frame(node["line"])
         function = self.compile_stmt(node["function"])
         args = []
+
+        if node["function"]["kind"] == "MemberExpression":
+            self.context.append({"kind": "ReturnPointerVariable"})
+            this = self.compile_stmt(node["function"]["parent"])
+            self.context.pop()
+            args.append(this)
 
         for arg in node["args"]:
             args.append(self.compile_stmt(arg))
@@ -542,21 +551,25 @@ class COMPILER:
 
         for ast_node in self.ast:
             if ast_node["kind"] == "ImplStatement" and ast_node["struct"] == node["identifier"]:
+                args = []
+                for arg in ast_node["method"]["params"]:
+                    args.append(self.compile_type(arg["type"]))
+                method_type = ir.FunctionType(self.compile_type(ast_node["method"]["return_type"]), args)
+                members.append(method_type.as_pointer())
+        struct_type.set_body(*members)
+
+        for ast_node in self.ast:
+            if ast_node["kind"] == "ImplStatement" and ast_node["struct"] == node["identifier"]:
                 method_name = f"AZ@{node["identifier"]}_{ast_node["method"]["name"]}"
                 ast_node["method"]["name"] = method_name
                 method_type = self.compile_function(ast_node["method"])
-                methods.append({"name": method_name, "type": method_type})
-                members.append(method_type)
-
-        struct_type.set_body(*members)
+                methods.append({"name": method_name, "type": method_type.as_pointer()})
 
     def compile_struct_literal(self, node):
         context = self.get_context()
         if context == None:
             return
         value = []
-
-        print(context["type"])
 
         for index, element in enumerate(node["elements"]):
             self.context.append(
@@ -569,6 +582,10 @@ class COMPILER:
             compiled_element = self.compile_stmt(element)
             value.append(compiled_element)
             self.context.pop()
+        struct_data = self.structs[context["raw"]["name"]]
+        for index, method in enumerate(struct_data["methods"]):
+            value.append(self.module.get_global(method["name"])) # type: ignore
+
         return ir.Constant(context["type"], value)
 
     def compile_struct_index(self, node):
@@ -597,13 +614,20 @@ class COMPILER:
                     break
                 index += 1
             if found == False:
+                index -= 1
+                for member in self.structs[struct_name]["methods"]:
+                    if member["name"] == f"AZ@{struct_name}_{child}":
+                        found = True
+                        break
+                index += 1
+            if found == False:
                 self.error_class.compiler_error(
                     f"{child} is not a member of {struct_name}!",
                     self.file,
                     chain_node["line"],
                 )
                 self.error_class.dump()
-            print(parent)
+            
             pointer = stack_frame["builder"].gep(
                 parent,
                 [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)],

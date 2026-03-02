@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from preprocessor import *
 from lexer import *
 from parser import *
 from semantic_analysis import *
@@ -32,10 +33,14 @@ if not input_file.exists():
     sys.exit()(1)
 
 with open(input_file) as f:
-    tokens = LEXER(f.read(), input_file.name).tokens
+    source = PREPROCESSOR(f.read(), input_file.name).processed
+    tokens = LEXER(source, input_file.name).tokens
     ast = PARSER(tokens, input_file.name).ast
     SEMANTIC_ANALYSIS(ast, input_file.name)
     module = COMPILER(ast, input_file.name)
+
+if "--pppc" in flags:
+    print(source)
 
 if "--llvmir" in flags:
     print(module.module)
