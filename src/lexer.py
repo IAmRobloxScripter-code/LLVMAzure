@@ -208,9 +208,9 @@ class LEXER:
                     )
                     self.error_class.dump()
                 self.eat()
-            elif char.isalpha():
+            elif char.isalpha() or char == "_":
                 identifier = ""
-                while len(self.characters) > 0 and self.at().isalnum():
+                while len(self.characters) > 0 and (self.at().isalnum() or char == "_"):
                     identifier += self.eat()
                 if identifier in NATIVE_KEYWORDS:
                     self.push_token(self.make_token(identifier, "keyword"))

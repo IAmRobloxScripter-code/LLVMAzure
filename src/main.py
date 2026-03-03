@@ -34,13 +34,13 @@ if not input_file.exists():
 
 with open(input_file) as f:
     source = PREPROCESSOR(f.read(), input_file.name).processed
+    if "--pppc" in flags:
+        print(source)
     tokens = LEXER(source, input_file.name).tokens
     ast = PARSER(tokens, input_file.name).ast
     SEMANTIC_ANALYSIS(ast, input_file.name)
     module = COMPILER(ast, input_file.name)
 
-if "--pppc" in flags:
-    print(source)
 
 if "--llvmir" in flags:
     print(module.module)

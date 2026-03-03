@@ -20,31 +20,9 @@ def find_msvc_libs():
     return msvc_lib, ucrt_lib, um_lib
 
 def link(obj_file, exe_file):
-    os_name = platform.system()
-    if os_name == "Windows":
-        cmd = ["clang", obj_file, "-o", exe_file]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(result.stdout)
-            print(result.stderr)
-            raise RuntimeError("Linking failed")
-
-    elif os_name == "Linux":
-        result = subprocess.run(
-            ["ld", obj_file, "-o", exe_file, "-lc", "--dynamic-linker=/lib64/ld-linux-x86-64.so.2"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            print(result.stdout)
-            print(result.stderr)
-            raise RuntimeError("Linking failed")
-
-    elif os_name == "Darwin":
-        result = subprocess.run(
-            ["ld", obj_file, "-o", exe_file, "-lSystem", "-L/usr/lib"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            print(result.stdout)
-            print(result.stderr)
-            raise RuntimeError("Linking failed")
+    cmd = ["clang", obj_file, "-o", exe_file]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr)
+        raise RuntimeError("Linking failed")

@@ -51,7 +51,7 @@ class COMPILER:
 
         target_triple = binding.get_default_triple()
         target = binding.Target.from_triple(target_triple)
-        target_machine = target.create_target_machine(codemodel="default")
+        target_machine = target.create_target_machine(codemodel="default", reloc="pic")
         obj = target_machine.emit_object(llvm_module)
 
         extension = ".obj" if sys.platform == "win32" else ".o"
@@ -71,7 +71,7 @@ class COMPILER:
     def create_module(self, name: str = "main"):
         self.module = ir.Module(name=name)
         self.module.triple = binding.get_default_triple()
-        self.module.data_layout = binding.Target.from_default_triple().create_target_machine(codemodel="default").target_data  # type: ignore
+        self.module.data_layout = binding.Target.from_default_triple().create_target_machine(codemodel="default", reloc="pic").target_data  # type: ignore
 
     def get_context(self):
         if len(self.context) > 0:
