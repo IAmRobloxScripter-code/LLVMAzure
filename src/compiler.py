@@ -20,6 +20,7 @@ class COMPILER:
         self.if_count = 0
         self.loop_count = 0
         self.error_class = ERROR()
+        self.generated_main = False
         self.llvm_base_types = {
             "u8": ir.IntType(8),
             "u16": ir.IntType(16),
@@ -41,6 +42,16 @@ class COMPILER:
 
         for node in self.ast:
             self.compile_stmt(node)
+
+        if self.generated_main == False:
+            self.compile_function({
+                "kind": "FunctionDeclaration",
+                "name": "main",
+                "return_type": {"kind": "BaseType", "type": "i32", "line": 1},
+                "params": [],
+                "body": [],
+                "line": 1,
+            })
 
         if len(self.error_class.stack) > 0:
             self.error_class.dump()
@@ -245,6 +256,8 @@ class COMPILER:
                 builder.ret(ir.Constant(return_type, 0))
 
         self.stack.pop()
+        if node["name"] == "main":
+            self.generated_main = True
         return func_type
 
     def compile_binary(self, node):
@@ -268,11 +281,6 @@ class COMPILER:
                     left,
                     [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
                 ))
-            
-            # left = stack_frame["builder"].gep(
-            #         left,
-            #         [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
-            #     )
         else:
             left = self.compile_stmt(node["left"])
             right = self.compile_stmt(node["right"])

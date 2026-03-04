@@ -1,0 +1,5 @@
+(@isdef IO_AZ)
+(@iselse
+    (@defmacro IO_AZ)
+    (declare (fn printf i32 (fmt string ...)))
+)

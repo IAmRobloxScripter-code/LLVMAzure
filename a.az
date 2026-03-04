@@ -1,0 +1,5 @@
+(@insert "std/io")
+
+(fn main i32 ()
+    (() printf "Hello World!")
+)

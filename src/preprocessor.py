@@ -2,6 +2,8 @@ from error import *
 import sys
 import struct
 import os
+import re
+from pathlib import Path
 
 class PREPROCESSOR:
     def __init__(self, source: str, file: str = ""):
@@ -10,6 +12,7 @@ class PREPROCESSOR:
         self.characters = list(source)
         self.processed = self.source
         self.macros = {}
+        self.macro_params = {}
         self.error_class = ERROR()
         self.line = 1
         self.swaps = False
@@ -31,7 +34,7 @@ class PREPROCESSOR:
 
         while True:
             self.source = self.processed
-            self.characters = list(self.processed)
+            self.characters = list(self.source)
             self.processed = ""
             self.line = 1
             self.swaps = False
@@ -52,6 +55,8 @@ class PREPROCESSOR:
 
     def skip_whitespace(self):
         while len(self.characters) > 0 and self.at() in (" ", "\t", "\r", "\n"):
+            if self.at() in ("\r" "\n"):
+                self.line += 1
             self.characters.pop(0)
 
     def begin(self):
@@ -83,6 +88,8 @@ class PREPROCESSOR:
                             depth -= 1
                         if depth <= 0:
                             break
+                        if self.at() in ("\n", "\r"):
+                            self.line += 1
                         body += self.characters.pop(0)
 
                     self.skip_whitespace()
@@ -117,6 +124,8 @@ class PREPROCESSOR:
                                     else_depth -= 1
                                 if else_depth <= 0:
                                     break
+                                if self.at() in ("\n", "\r"):
+                                    self.line += 1
                                 else_body += self.characters.pop(0)
                         else:
                             self.processed += f"@({potential_else}"
@@ -134,14 +143,91 @@ class PREPROCESSOR:
 
                     if identifier in self.macros:
                         self.processed += body
+                        self.swaps = True
                     else:
                         self.processed += else_body
+                        self.swaps = True
+
+                if instruction == "insert":
+                    self.skip_whitespace()
+                    path = ""
+                    string_terminator = ""
+                    if len(self.characters) <= 0 or self.at() not in ("\"", "'", "`"):
+                        self.error_class.preprocessing_error(
+                            f"Expected a string start at the start of insert path!",
+                            self.file,
+                            self.line,
+                        )
+                        self.error_class.dump()
+                    else:
+                        string_terminator = self.characters.pop(0)
+
+                    while len(self.characters) > 0 and self.at() != string_terminator:
+                        if self.at() in ("\n", "\r"):
+                            self.line += 1
+                        path += self.characters.pop(0)
+
+                    if len(self.characters) <= 0 or self.at() != string_terminator:
+                        self.error_class.preprocessing_error(
+                            f"Expected a string terminator at the end of insert path!",
+                            self.file,
+                            self.line,
+                        )
+                        self.error_class.dump()
+                    else:
+                        self.characters.pop(0)
+                    self.skip_whitespace()
+                    if len(self.characters) <= 0 or self.at() != ")":
+                        self.error_class.preprocessing_error(
+                            f"Expected ')' at the end of insert!",
+                            self.file,
+                            self.line,
+                        )
+                        self.error_class.dump()
+                    else:
+                        self.characters.pop(0)
+                    if not path.endswith(".az"):
+                        path += ".az"
+                    path_class = Path(path)
+                    if path_class.exists() and path_class.is_file():
+                        with open(path_class, "r") as inserted_file:
+                            self.processed += f"\n{inserted_file.read()}\n"
+                            inserted_file.close()
+                        self.swaps = True
+                    else:
+                        self.error_class.preprocessing_error(
+                            f"Invalid insert -> `{path}` does not exist or is not a valid file!",
+                            self.file,
+                            self.line,
+                        )
+                        self.error_class.dump()
 
                 if instruction == "defmacro":
                     identifier = ""
                     
                     while len(self.characters) > 0 and (self.at().isalnum() or self.at() == "_"):
                         identifier += self.characters.pop(0)
+
+                    if self.at() == "(":
+                        symbols = []
+                        self.characters.pop(0)
+                        self.skip_whitespace()
+                        while len(self.characters) > 0 and self.at() != ")":
+                            param = ""
+                            while len(self.characters) > 0 and (self.at().isalnum() or self.at() == "_"):
+                                param += self.characters.pop(0)
+                            symbols.append(param)
+                            self.skip_whitespace()
+                        if len(self.characters) <= 0 or self.at() != ")":
+                            self.error_class.preprocessing_error(
+                                f"Expected ')' at the end of macro parameter defenition!",
+                                self.file,
+                                self.line,
+                            )
+                            self.error_class.dump()
+                        else:
+                            self.characters.pop(0)
+                        self.macro_params[identifier] = symbols
 
                     self.skip_whitespace()
                     body = ""
@@ -153,6 +239,8 @@ class PREPROCESSOR:
                             depth -= 1
                         if depth <= 0:
                             break
+                        if self.at() in ("\n", "\r"):
+                            self.line += 1
                         body += self.characters.pop(0)
 
                     self.skip_whitespace()
@@ -174,7 +262,65 @@ class PREPROCESSOR:
                     identifier += self.characters.pop(0)
 
                 if identifier in self.macros:
-                    self.processed += self.macros[identifier]
+                    macro = self.macros[identifier]
+                    if self.at() == "(":
+                        params = []
+                        self.characters.pop(0)
+                        while len(self.characters) > 0 and self.at() != ")":
+                            self.skip_whitespace()
+                            if len(self.characters) <= 0 or self.at() != "(":
+                                self.error_class.preprocessing_error(
+                                    "Expected '(' at the start of macro argument!",
+                                    self.file,
+                                    self.line,
+                                )
+                                self.error_class.dump()
+                            else:
+                                self.characters.pop(0)
+                            param = ""
+                            while len(self.characters) > 0 and self.at() != ")":
+                                if self.at() in ("\n", "\r"):
+                                    self.line += 1
+                                param += self.characters.pop(0)
+                            params.append(param)
+                            if len(self.characters) <= 0 or self.at() != ")":
+                                self.error_class.preprocessing_error(
+                                    "Expected ')' at the end of macro argument!",
+                                    self.file,
+                                    self.line,
+                                )
+                                self.error_class.dump()
+                            else:
+                                self.characters.pop(0)
+                        if len(self.characters) <= 0 or self.at() != ")":
+                            self.error_class.preprocessing_error(
+                                "Expected ')' at the end of macro arguments!",
+                                self.file,
+                                self.line,
+                            )
+                            self.error_class.dump()
+                        else:
+                            self.characters.pop(0)
+
+                        if len(self.macro_params[identifier]) < len(params):
+                            self.error_class.preprocessing_error(
+                                "Too many arguments for macro arguments!",
+                                self.file,
+                                self.line,
+                            )
+                            self.error_class.dump()
+                        elif len(self.macro_params[identifier]) > len(params):
+                            self.error_class.preprocessing_error(
+                                "Too few arguments for macro arguments!",
+                                self.file,
+                                self.line,
+                            )
+                            self.error_class.dump()
+                        for index, param in enumerate(self.macro_params[identifier]):
+                            pattern = rf"\b{re.escape(param)}\b"
+                            macro = re.sub(pattern, params[index], macro)
+
+                    self.processed += macro
                     self.swaps = True
                 else:
                     self.processed += identifier
