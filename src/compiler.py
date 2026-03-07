@@ -130,6 +130,7 @@ class COMPILER:
                 "Cannot declare variable outside of a scope!", self.file, line
             )
             self.error_class.dump()
+            return {}
 
     def compile_stmt(self, node):
         match node["kind"]:

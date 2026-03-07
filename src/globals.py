@@ -29,5 +29,6 @@ NATIVE_KEYWORDS = [
     "stop",
     "continue",
     "ret",
-    "impl"
+    "impl",
+    "namespace"
 ]

@@ -1,4 +1,5 @@
 from error import *
+import scan
 
 
 class SEMANTIC_ANALYSIS:
@@ -10,6 +11,8 @@ class SEMANTIC_ANALYSIS:
         self.return_types = []
         self.stack_frame = []
         self.enums = {}
+        self.namespaces = []
+        self.type_generics = {}
         self.operators = {
             "+": [
                 {
@@ -231,8 +234,12 @@ class SEMANTIC_ANALYSIS:
                 self.analyze_is_statement(node)
             case "LoopStatement":
                 self.analyze_loop_statement(node)
-            case "ImplStatement":
-                self.analyze_impl_statement(node)
+            # case "ImplStatement":
+            #     self.analyze_impl_statement(node)
+            case "NamespaceDeclaration":
+                self.analyze_namespace_declaration(node)
+            case "TemplateDeclaration":
+                self.analyze_template_declaration(node)
 
     def is_return_type(self, type, function_name):
         for data in self.return_types:
@@ -241,6 +248,12 @@ class SEMANTIC_ANALYSIS:
             ) == self.stringify_type(type):
                 return True
         return False
+
+    def get_namespace(self):
+        if len(self.namespaces) > 0:
+            return self.namespaces[len(self.namespaces) - 1]
+        else:
+            return ""
 
     def get_return_type(self, function_name):
         for data in self.return_types:
@@ -374,13 +387,26 @@ class SEMANTIC_ANALYSIS:
         result = None
         if node["kind"] == "IdentifierLiteral":
             is_func = False
+            generics = []
+            for generic in node["generics"]:
+                generics.append(self.stringify_type(generic))
             for data in self.return_types:
-                if data["name"] == node["value"]:
+                value = node["value"]
+                if "generics" in node:
+                    value = scan.mangle("", node["value"], generics, "AZ@")
+                if data["name"] == value:
                     result = {"kind": "PointerType", "to": data["type"]}
                     is_func = True
                     break
             if not is_func:
-                result = stack_frame["variables"][node["value"]]["type"]
+                if "generics" in node:
+                    result = {
+                        "kind": "GenericType",
+                        "types": node["generics"],
+                        "of": self.structs[scan.mangle("", node["value"], generics)],
+                    }
+                else:
+                    result = stack_frame["variables"][node["value"]]["type"]
         elif node["kind"] == "CallExpression":
             result = self.build_type_from_expr(node["function"])["to"]["return"]  # type: ignore
         elif node["kind"] == "DereferenceExpression":
@@ -582,9 +608,16 @@ class SEMANTIC_ANALYSIS:
             struct_data["members"][member["identifier"]] = member["type"]
         self.structs[node["identifier"]] = struct_data
 
+        for body_node in self.ast:
+            if (
+                body_node["kind"] == "ImplStatement"
+                and body_node["struct"] == node["identifier"]
+            ):
+                self.analyze_impl_statement(node["identifier"], body_node)
+
     def analyze_call_expression(self, node):
         fn: dict = self.build_type_from_expr(node["function"])["to"]  # type: ignore
-    
+
         if fn == None:
             self.error_class.semantic_error(
                 f"'{fn["name"]}' is not a function!",
@@ -596,9 +629,7 @@ class SEMANTIC_ANALYSIS:
         less_args_count = len(fn["params"])
         if node["function"]["kind"] == "MemberExpression":
             less_args_count -= 1
-        if (
-            fn["params"][len(fn["params"]) - 1] == "varadic"
-        ):
+        if fn["params"][len(fn["params"]) - 1] == "varadic":
             less_args_count -= 1
 
         if less_args_count > len(node["args"]):
@@ -608,9 +639,9 @@ class SEMANTIC_ANALYSIS:
                 node["line"],
             )
             self.error_class.dump()
-        elif (
-            fn["params"][len(fn["params"]) - 1] != "varadic"
-        ) and len(fn["params"]) < len(node["args"]):
+        elif (fn["params"][len(fn["params"]) - 1] != "varadic") and len(
+            fn["params"]
+        ) < len(node["args"]):
             self.error_class.semantic_error(
                 f"Too many arguments while calling '{fn["name"]}'!",
                 self.file,
@@ -665,17 +696,8 @@ class SEMANTIC_ANALYSIS:
         for body_node in node["body"]:
             self.analyze(body_node)
 
-    def analyze_impl_statement(self, node):
-        """
-        {
-            "kind": "ImplStatement",
-            "struct": struct,
-            "method": function,
-            "line": line
-        }
-        """
-
-        if node["struct"] not in self.structs:
+    def analyze_impl_statement(self, name, node):
+        if name not in self.structs:
             self.error_class.semantic_error(
                 f"Cannot assign method to '{node["struct"]}' because it is not a struct!",
                 self.file,
@@ -712,5 +734,119 @@ class SEMANTIC_ANALYSIS:
         for param in node["method"]["params"]:
             function_type["params"].append(param["type"])
 
-        self.structs[node["struct"]]["members"][node["method"]["name"]] = {"kind": "PointerType", "to": function_type}
-        
+        self.structs[name]["members"][node["method"]["name"]] = {
+            "kind": "PointerType",
+            "to": function_type,
+        }
+
+    def analyze_namespace_declaration(self, node):
+        self.namespaces.append(node["name"])
+
+        for body_node in node["body"]:
+            self.analyze(body_node)
+
+        self.namespaces.pop()
+
+    def analyze_template_declaration(self, node):
+        # {
+        #     "kind": "TemplateDeclaration",
+        #     "identifiers": types,
+        #     "stmt": stmt,
+        #     "line": line,
+        # }
+
+        types_len = len(node["identifiers"])
+
+        if node["stmt"]["kind"] == "FunctionDeclaration":
+            name = node["stmt"]["name"]
+            types = scan.TEMPLATE_SEARCH(name, self.ast, self.file).template_types
+
+            if len(types) % types_len != 0:
+                self.error_class.semantic_error(
+                    "Failed to create template due to one of the constructors not having enough types!",
+                    self.file,
+                    node["line"],
+                )
+                self.error_class.dump()
+
+            index = 0
+            for symbols in node["identifiers"][
+                (index * types_len) : (types_len * index + 1)
+            ]:
+                for symbol_index, symbol in enumerate(symbols):
+                    self.type_generics[symbol] = types[
+                        (index * types_len) + symbol_index
+                    ]
+                mangled = scan.mangle(self.get_namespace(), name, symbols, "AZ@")
+                self.stack_frame.append(
+                    {
+                        "kind": "function",
+                        "name": mangled,
+                        "variables": {},
+                    }
+                )
+
+                function_type = {
+                    "kind": "FunctionType",
+                    "return": node["stmt"]["return_type"],
+                    "params": [],
+                    "name": mangled,
+                }
+
+                for param in node["stmt"]["params"]:
+                    function_type["params"].append(param["type"])
+
+                self.return_types.append(
+                    {
+                        "name": mangled,
+                        "params": node["stmt"]["params"],
+                        "return_type": node["stmt"]["return_type"],
+                        "type": function_type,
+                    }
+                )
+
+                for body_node in node["stmt"]["body"]:
+                    self.analyze(body_node)
+
+                self.stack_frame.pop()
+
+                index += 1
+
+            for symbol in node["identifiers"]:
+                del self.type_generics[symbol]
+        elif node["stmt"]["kind"] == "StructDeclaration":
+            name = node["stmt"]["identifier"]
+            types = scan.TEMPLATE_SEARCH(name, self.ast, self.file).template_types
+
+            if len(types) % types_len != 0:
+                self.error_class.semantic_error(
+                    "Failed to create template due to one of the constructors not having enough types!",
+                    self.file,
+                    node["line"],
+                )
+                self.error_class.dump()
+
+            index = 0
+            for symbols in node["identifiers"][
+                (index * types_len) : (types_len * index + 1) : types_len
+            ]:
+                mangled = scan.mangle(self.get_namespace(), name, symbols)
+                if mangled in self.structs:
+                    continue
+                for symbol_index, symbol in enumerate(symbols):
+                    self.type_generics[symbol] = types[
+                        (index * types_len) + symbol_index
+                    ]
+
+                struct_data = {"name": mangled, "members": {}, "original": name}
+
+                for member in node["stmt"]["members"]:
+                    struct_data["members"][member["identifier"]] = member["type"]
+                self.structs[mangled] = struct_data
+
+                for body_node in self.ast:
+                    if (
+                        body_node["kind"] == "ImplStatement"
+                        and body_node["struct"] == name
+                    ):
+                        self.analyze_impl_statement(mangled, body_node)

@@ -41,6 +41,7 @@ class PARSER:
                     self.at()["line"],
                 )
                 self.error_class.dump()
+                return {}
         elif value and not kind:
             if self.at()["value"] == value:
                 return self.eat()
@@ -51,6 +52,7 @@ class PARSER:
                     self.at()["line"],
                 )
                 self.error_class.dump()
+                return {}
         elif not value and kind:
             if self.at()["kind"] == kind:
                 return self.eat()
@@ -61,8 +63,10 @@ class PARSER:
                     self.at()["line"],
                 )
                 self.error_class.dump()
+                return {}
         else:
-            exit(1)
+            sys.exit(1)
+            return {}
 
     def parse_expr(self):
         match self.at()["value"]:
@@ -105,6 +109,8 @@ class PARSER:
                 return self.parse_enum()
             case "impl":
                 return self.parse_impl()
+            case "namespace":
+                return self.parse_namespace()
 
     def parse_stmt(self):
         self.expect("(")
@@ -150,7 +156,7 @@ class PARSER:
     def parse_type(self):
         token = self.at()
         node = None
-        if token["kind"] == "type" or token["value"] in self.types:
+        if token["kind"] == "type" or token["kind"] == "identifier" or token["value"] in self.types:
             if token["value"] in self.structs:
                 self.eat()
                 node = {
@@ -618,6 +624,25 @@ class PARSER:
             "method": function,
             "line": line
         }
+    
+    def parse_namespace(self):
+        line = self.eat()["line"]
+        namespace = self.expect(kind="identifier")["value"]
+        body = []
+
+        while (
+            len(self.tokens) > 0
+            and self.at()["kind"] != "EOF"
+            and self.at()["value"] != ")"
+        ):
+            body.append(self.parse_stmt())
+
+        return {
+            "kind": "NamespaceDeclaration",
+            "name": namespace,
+            "body": body,
+            "line": line
+        }
 
     def parse_primary(self):
         token = self.at()
@@ -679,7 +704,23 @@ class PARSER:
                     "line": token["line"],
                 }
             case _:
+                if self.at()["value"] == "<":
+                    self.eat()
+                    types = []
+                    
+                    while len(self.tokens) > 0 and self.at()["value"] != ">":
+                        types.append(self.parse_type())
+                    
+                    self.expect(">")
+                    return {
+                        "kind": "IdentifierLiteral",
+                        "generics": types,
+                        "value": self.expect(kind="identifier")["value"],
+                        "line": token["line"],
+                    }
+
                 self.error_class.parsing_error(
                     "Invalid primary expression!", self.file, token["line"]
                 )
                 self.error_class.dump()
+                return {}

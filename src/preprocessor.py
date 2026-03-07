@@ -191,7 +191,7 @@ class PREPROCESSOR:
                     path_class = Path(path)
                     if path_class.exists() and path_class.is_file():
                         with open(path_class, "r") as inserted_file:
-                            self.processed += f"\n{inserted_file.read()}\n"
+                            self.processed += f"{inserted_file.read()}"
                             inserted_file.close()
                         self.swaps = True
                     else:
