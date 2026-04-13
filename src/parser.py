@@ -8,9 +8,13 @@ class PARSER:
         self.error_class = ERROR()
         self.ast = []
         self.types = []
+        self.defined_types = {}
         self.structs = {}
         while len(self.tokens) > 0 and self.at()["kind"] != "EOF":
-            self.ast.append(self.parse_stmt())
+            stmt = self.parse_stmt()
+            if stmt:
+                self.ast.append(stmt)
+
         if len(self.error_class.stack) > 0:
             self.error_class.dump()
 
@@ -109,8 +113,6 @@ class PARSER:
                 return self.parse_enum()
             case "impl":
                 return self.parse_impl()
-            case "namespace":
-                return self.parse_namespace()
 
     def parse_stmt(self):
         self.expect("(")
@@ -156,16 +158,20 @@ class PARSER:
     def parse_type(self):
         token = self.at()
         node = None
-        if token["kind"] == "type" or token["kind"] == "identifier" or token["value"] in self.types:
+        if (
+            token["kind"] == "type"
+            or token["kind"] == "identifier"
+            or token["value"] in self.types
+        ):
             if token["value"] in self.structs:
                 self.eat()
                 node = {
                     "kind": "StructType",
                     "members": [],
                     "name": token["value"],
-                    "line": token["line"]
+                    "line": token["line"],
                 }
-                
+
                 for member in self.structs[token["value"]]:
                     node["members"].append(member["type"])
             elif token["value"] == "function":
@@ -178,13 +184,15 @@ class PARSER:
                     len(self.tokens) > 0
                     and self.at()["kind"] != "EOF"
                     and self.at()["value"] != ")"
-                ):  
+                ):
                     if self.at()["kind"] == "varadic":
-                        params.append({
-                            "kind": "BaseType",
-                            "type": "varadic",
-                            "line": self.eat()["line"],
-                        })
+                        params.append(
+                            {
+                                "kind": "BaseType",
+                                "type": "varadic",
+                                "line": self.eat()["line"],
+                            }
+                        )
                     else:
                         params.append(self.parse_type())
                 self.expect(")")
@@ -193,8 +201,10 @@ class PARSER:
                     "kind": "FunctionType",
                     "return": return_type,
                     "params": params,
-                    "line": token["line"]
+                    "line": token["line"],
                 }
+            elif token["value"] in self.types and token["value"] in self.defined_types:
+                return self.defined_types[self.eat()["value"]]
             else:
                 node = {
                     "kind": "BaseType",
@@ -420,7 +430,7 @@ class PARSER:
             value = self.parse_stmt_or_expr()
             self.expect("]")
             return {"kind": "DereferenceExpression", "value": value, "line": line}
-    
+
     def parse_struct_literal(self):
         line = self.eat()["line"]
         self.expect("}")
@@ -429,10 +439,10 @@ class PARSER:
             len(self.tokens) > 0
             and self.at()["kind"] != "EOF"
             and self.at()["value"] != ")"
-        ):  
+        ):
             elements.append(self.parse_stmt_or_expr())
         return {"kind": "StructLiteral", "elements": elements, "line": line}
-    
+
     def parse_call(self):
         line = self.eat()["line"]
         self.expect(")")
@@ -482,7 +492,7 @@ class PARSER:
         }
 
     def parse_template(self):
-        line = self.eat()["line"]
+        self.eat()
         position = len(self.types)
         count = 0
         types = []
@@ -495,14 +505,33 @@ class PARSER:
             types.append(type_identifier)
             self.types.append(type_identifier)
             count += 1
+
+        self.expect("(")
+        blueprints = []
+        while (
+            len(self.tokens) > 0
+            and self.at()["kind"] != "EOF"
+            and self.at()["value"] != ")"
+        ):
+            blueprints.append(self.parse_type())
+        self.expect(")")
+
+        # combinations = list(product(blueprints, repeat=len(types)))
+        # for combo in combinations:
+        #     mapping = dict(zip(types, combo))
+        #     for blueprint, blueprint_type in mapping.items():
+        #         self.defined_types[blueprint] = blueprint_type
+        #     self.ast.append(self.parse_stmt())
+        #     for blueprint in mapping.keys():
+        #         del self.defined_types[blueprint]
         stmt = self.parse_stmt()
         for _ in range(count):
             self.types.pop(position)
         return {
             "kind": "TemplateDeclaration",
             "identifiers": types,
+            "blueprints": blueprints,
             "stmt": stmt,
-            "line": line,
         }
 
     def parse_index(self):
@@ -521,7 +550,7 @@ class PARSER:
             "child": child_chain,
             "line": line,
         }
-    
+
     def parse_struct_index(self):
         line = self.eat()["line"]
         parent = self.parse_stmt_or_expr()
@@ -542,11 +571,7 @@ class PARSER:
     def parse_declare(self):
         line = self.eat()["line"]
         stmt = self.parse_stmt()
-        return {
-            "kind": "DeclareForeignStatement",
-            "stmt": stmt,
-            "line": line
-        }
+        return {"kind": "DeclareForeignStatement", "stmt": stmt, "line": line}
 
     def parse_assignment(self):
         line = self.eat()["line"]
@@ -558,7 +583,7 @@ class PARSER:
             "right": right,
             "line": line,
         }
-    
+
     def parse_enum(self):
         line = self.eat()["line"]
         identifier = self.expect(kind="identifier")["value"]
@@ -612,37 +637,37 @@ class PARSER:
             "args": constructor_values,
             "line": line,
         }
-    
+
     def parse_impl(self):
         line = self.eat()["line"]
-        struct = self.expect(kind="identifier")["value"]
+        struct = self.parse_primary()
         function = self.parse_stmt()
 
         return {
             "kind": "ImplStatement",
             "struct": struct,
             "method": function,
-            "line": line
+            "line": line,
         }
-    
-    def parse_namespace(self):
-        line = self.eat()["line"]
-        namespace = self.expect(kind="identifier")["value"]
-        body = []
 
-        while (
-            len(self.tokens) > 0
-            and self.at()["kind"] != "EOF"
-            and self.at()["value"] != ")"
-        ):
-            body.append(self.parse_stmt())
+    # def parse_namespace(self):
+    #     line = self.eat()["line"]
+    #     namespace = self.expect(kind="identifier")["value"]
+    #     body = []
 
-        return {
-            "kind": "NamespaceDeclaration",
-            "name": namespace,
-            "body": body,
-            "line": line
-        }
+    #     while (
+    #         len(self.tokens) > 0
+    #         and self.at()["kind"] != "EOF"
+    #         and self.at()["value"] != ")"
+    #     ):
+    #         body.append(self.parse_stmt())
+
+    #     return {
+    #         "kind": "NamespaceDeclaration",
+    #         "name": namespace,
+    #         "body": body,
+    #         "line": line,
+    #     }
 
     def parse_primary(self):
         token = self.at()
@@ -707,10 +732,9 @@ class PARSER:
                 if self.at()["value"] == "<":
                     self.eat()
                     types = []
-                    
                     while len(self.tokens) > 0 and self.at()["value"] != ">":
                         types.append(self.parse_type())
-                    
+
                     self.expect(">")
                     return {
                         "kind": "IdentifierLiteral",

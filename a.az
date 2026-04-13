@@ -1,5 +1,20 @@
 (@insert "std/io")
 
+(template T (i8 i16 i32 i64) 
+    (struct vector
+        (size u64)
+        (capacity u64)
+        (array []T)
+    )
+)
+
+(impl vector (fn new void (self *<T>vector value []T)
+    (= (-> self size) 0)
+    (= (-> self capacity) 8)
+    (= (-> self array) value)
+))
+
 (fn main i32 ()
-    (() printf "Hello World!")
+    (let numbers <i32>vector ({}))
+    (() (-> numbers new) ([] 1 2 3 4 5 6))
 )

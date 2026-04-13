@@ -1,9 +1,13 @@
+from itertools import product
+import json
 import sys
 
 from error import *
 from llvmlite import ir, binding
 import ctypes
 import os
+
+import scan
 
 
 class COMPILER:
@@ -21,6 +25,7 @@ class COMPILER:
         self.loop_count = 0
         self.error_class = ERROR()
         self.generated_main = False
+        self.defined_types = {}
         self.llvm_base_types = {
             "u8": ir.IntType(8),
             "u16": ir.IntType(16),
@@ -44,14 +49,16 @@ class COMPILER:
             self.compile_stmt(node)
 
         if self.generated_main == False:
-            self.compile_function({
-                "kind": "FunctionDeclaration",
-                "name": "main",
-                "return_type": {"kind": "BaseType", "type": "i32", "line": 1},
-                "params": [],
-                "body": [],
-                "line": 1,
-            })
+            self.compile_function(
+                {
+                    "kind": "FunctionDeclaration",
+                    "name": "main",
+                    "return_type": {"kind": "BaseType", "type": "i32", "line": 1},
+                    "params": [],
+                    "body": [],
+                    "line": 1,
+                }
+            )
 
         if len(self.error_class.stack) > 0:
             self.error_class.dump()
@@ -92,6 +99,8 @@ class COMPILER:
 
     def compile_type(self, node, value=None):
         if node["kind"] == "BaseType":
+            if node["type"] in self.defined_types:
+                return self.defined_types[node["type"]]
             return self.llvm_base_types[node["type"]]
         elif node["kind"] == "PointerType":
             inner = self.compile_type(node["to"], value)
@@ -116,8 +125,19 @@ class COMPILER:
                     var_args = True
                     break
                 param_types.append(self.compile_type(param))
-    
+
             return ir.FunctionType(return_type, param_types, var_arg=var_args)
+        elif node["kind"] == "GenericType":
+            # print(json.dumps(node, indent=2))
+            value = None
+            node_types_llvm = []
+            for node_type in node["types"]:
+                node_types_llvm.append(self.compile_type(node_type))
+            if node["of"]["kind"] == "StructType":
+                value = scan.mangle_with_llvm(node["of"]["name"], node_types_llvm)
+                return self.structs[value]["type"]
+            else:
+                return
         else:
             self.error_class.compiler_error("Uknown type!", self.file, node["line"])
             self.error_class.dump()
@@ -152,8 +172,16 @@ class COMPILER:
             case "IdentifierLiteral":
                 stack_frame = self.get_current_stack_frame(node["line"])
                 context = self.get_context()
-                if node["value"] in self.functions:
-                    return self.functions[node["value"]]
+                node_llvm_types = []
+                for node_type in node["generics"] or []:
+                    node_llvm_types.append(self.compile_type(node_type))
+                value = scan.mangle_with_llvm(node["value"], node_llvm_types)
+
+                if value in self.structs:
+                    return self.structs[value]["type"]
+
+                if value in self.functions:
+                    return self.functions[value]
 
                 if context != None and "ReturnPointerVariable" in context["kind"]:
                     return stack_frame["variables"][node["value"]]["memory"]
@@ -192,6 +220,8 @@ class COMPILER:
                 return self.compile_enum(node)
             case "EnumIndexExpression":
                 return self.compile_enum_index(node)
+            case "TemplateDeclaration":
+                return self.compile_template_declaration(node)
 
     def retrieve_basic_type(self, node):
         if node["kind"] == "BaseType":
@@ -240,7 +270,7 @@ class COMPILER:
                 "memory": main_func.args[index],
                 "type": param["type"],
             }
-        
+
         self.functions[node["name"]] = main_func
         self.stack.append({"builder": builder, "variables": variables})
 
@@ -266,22 +296,22 @@ class COMPILER:
         left = None
         right = None
         if node["operator"] == "==":
-            self.context.append({
-                "kind": ["ReturnPointerVariable"]
-            })
+            self.context.append({"kind": ["ReturnPointerVariable"]})
             left = self.compile_stmt(node["left"])
             self.context.pop()
-            self.context.append({
-                "kind": ["CmpEq"],
-                "left": left
-            })
+            self.context.append({"kind": ["CmpEq"], "left": left})
             right = self.compile_stmt(node["right"])
             self.context.pop()
             if node["right"]["kind"] == "EnumIndexExpression":
-                left = stack_frame["builder"].load(stack_frame["builder"].gep(
-                    left,
-                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
-                ))
+                left = stack_frame["builder"].load(
+                    stack_frame["builder"].gep(
+                        left,
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), 0),
+                        ],
+                    )
+                )
         else:
             left = self.compile_stmt(node["left"])
             right = self.compile_stmt(node["right"])
@@ -555,20 +585,29 @@ class COMPILER:
         self.structs[node["identifier"]] = {
             "type": struct_type,
             "members": members_with_name,
-            "methods": methods
+            "methods": methods,
         }
 
         for ast_node in self.ast:
-            if ast_node["kind"] == "ImplStatement" and ast_node["struct"] == node["identifier"]:
+            if (
+                ast_node["kind"] == "ImplStatement"
+                and ast_node["struct"] == node["identifier"]
+            ):
                 args = []
                 for arg in ast_node["method"]["params"]:
                     args.append(self.compile_type(arg["type"]))
-                method_type = ir.FunctionType(self.compile_type(ast_node["method"]["return_type"]), args)
+                method_type = ir.FunctionType(
+                    self.compile_type(ast_node["method"]["return_type"]), args
+                )
                 members.append(method_type.as_pointer())
+
         struct_type.set_body(*members)
 
         for ast_node in self.ast:
-            if ast_node["kind"] == "ImplStatement" and ast_node["struct"] == node["identifier"]:
+            if (
+                ast_node["kind"] == "ImplStatement"
+                and ast_node["struct"] == node["identifier"]
+            ):
                 method_name = f"AZ@{node["identifier"]}_{ast_node["method"]["name"]}"
                 ast_node["method"]["name"] = method_name
                 method_type = self.compile_function(ast_node["method"])
@@ -593,7 +632,7 @@ class COMPILER:
             self.context.pop()
         struct_data = self.structs[context["raw"]["name"]]
         for index, method in enumerate(struct_data["methods"]):
-            value.append(self.module.get_global(method["name"])) # type: ignore
+            value.append(self.module.get_global(method["name"]))  # type: ignore
 
         return ir.Constant(context["type"], value)
 
@@ -604,6 +643,21 @@ class COMPILER:
         stack_frame = self.get_current_stack_frame(node["line"])
         context = self.get_context()
         pointer = None
+
+        if isinstance(parent, ir.IdentifiedStructType):
+            struct_name = parent.name
+            child = node["child"][0]["value"]
+            print(self.structs[struct_name]["methods"])
+            for method in self.structs[struct_name]["methods"]:
+                if method["name"] == f"AZ@{struct_name}_{child}":
+                    return self.functions[f"AZ@{struct_name}_{child}"]
+            self.error_class.compiler_error(
+                f"{child} is not a valid member of type {struct_name}!",
+                self.file,
+                node["child"][0]["line"],
+            )
+            self.error_class.dump()
+
         struct_type = parent.type
         struct_name = None
 
@@ -636,7 +690,7 @@ class COMPILER:
                     chain_node["line"],
                 )
                 self.error_class.dump()
-            
+
             pointer = stack_frame["builder"].gep(
                 parent,
                 [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)],
@@ -732,12 +786,13 @@ class COMPILER:
                 [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
             )
 
-            payload = stack_frame["builder"].load(payload_pointer)
-            if isinstance(child["type"], (ir.LiteralStructType, ir.IdentifiedStructType)):
+            # payload = stack_frame["builder"].load(payload_pointer)
+            if isinstance(
+                child["type"], (ir.LiteralStructType, ir.IdentifiedStructType)
+            ):
                 index = 0
                 typed_pointer = stack_frame["builder"].bitcast(
-                    payload_pointer,
-                    child["type"].as_pointer()
+                    payload_pointer, child["type"].as_pointer()
                 )
                 for arg in enum_args:
                     stack_frame["variables"][arg["value"]] = {
@@ -749,10 +804,13 @@ class COMPILER:
                     }
                     value_pointer = stack_frame["builder"].gep(
                         typed_pointer,
-                        [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)],
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), index),
+                        ],
                     )
                     value = stack_frame["builder"].load(value_pointer)
-    
+
                     stack_frame["builder"].store(
                         value, stack_frame["variables"][arg["value"]]["memory"]
                     )
@@ -765,15 +823,15 @@ class COMPILER:
                     "type": child["raw"],
                 }
                 typed_pointer = stack_frame["builder"].bitcast(
-                    payload_pointer,
-                    child["type"].as_pointer()
+                    payload_pointer, child["type"].as_pointer()
                 )
                 stack_frame["builder"].store(
-                    stack_frame["builder"].load(typed_pointer), stack_frame["variables"][enum_args[0]["value"]]["memory"]
+                    stack_frame["builder"].load(typed_pointer),
+                    stack_frame["variables"][enum_args[0]["value"]]["memory"],
                 )
             return ir.Constant(enum_data["raw"][0], child["tag"])
         enum_pointer = stack_frame["builder"].alloca(enum_data["type"])
- 
+
         tag = 0
         for name in enum_data["data"]:
             if name == node["child"]:
@@ -798,16 +856,19 @@ class COMPILER:
                 self.context.pop()
             else:
                 typed_union_pointer = stack_frame["builder"].bitcast(
-                        payload_pointer,
-                        child["type"].as_pointer()
-                    )
+                    payload_pointer, child["type"].as_pointer()
+                )
                 for i, arg_node in enumerate(enum_args):
                     self.context.append(
-                        {"kind": ["TypeCast"], "type": self.compile_type(child["raw"][i]), "raw": child["raw"]}
+                        {
+                            "kind": ["TypeCast"],
+                            "type": self.compile_type(child["raw"][i]),
+                            "raw": child["raw"],
+                        }
                     )
                     value = self.compile_stmt(arg_node)
                     self.context.pop()
-                    
+
                     field_pointer = stack_frame["builder"].gep(
                         typed_union_pointer,
                         [
@@ -823,3 +884,30 @@ class COMPILER:
             stack_frame["builder"].store(compiled_value, cast_pointer)
 
         return stack_frame["builder"].load(enum_pointer)
+
+    def compile_template_declaration(self, node):
+        combinations = list(
+            product(node["blueprints"], repeat=len(node["identifiers"]))
+        )
+
+        if node["stmt"]["kind"] == "StructDeclaration":
+            identifier = node["stmt"]["identifier"]
+
+            for combo in combinations:
+                mapping = dict(zip(node["identifiers"], combo))
+                for blueprint, blueprint_type in mapping.items():
+                    self.defined_types[blueprint] = self.compile_type(blueprint_type)
+
+                if node["stmt"]["kind"] == "StructDeclaration":
+                    node_llvm_types = []
+                    for node_type in list(combo):
+                        node_llvm_types.append(self.compile_type(node_type))
+
+                    node["stmt"]["identifier"] = scan.mangle_with_llvm(
+                        identifier, node_llvm_types
+                    )
+
+                self.compile_struct(node["stmt"])
+
+                for blueprint in mapping.keys():
+                    del self.defined_types[blueprint]

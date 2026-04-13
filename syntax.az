@@ -1,0 +1,74 @@
+types:
+    void,
+    u8,
+    u16,
+    u32,
+    u64,
+    i8,
+    i16,
+    i32,
+    i64,
+    f32,
+    f64,
+    bool,
+    string
+
+
+(struct name
+    (name type)
+    (name type)
+) # struct
+
+(template T V (i32 i64 i8)
+    (struct name
+        (name type)
+        (name type)
+    )
+) # template struct
+
+(generic name T (u64 u32) V (u64 u32))
+
+(impl name (fn foo i32 (self type)
+    # function body
+)) # add functions to the struct
+
+(let name type value) # variable
+(let name <int string>type value) # generics
+
+(fn name return_type (name type name type)
+    (is (== 1 1)
+        (() printf "Hello World! %i" 100) # call expression
+        (= name 100) # assignment
+        (. array index1 index2 index3) # index expression array[index1][index2][index3]
+        (stop) # break
+        (continue) # continue
+        (ret value) # return value
+        (ret) # return
+    ) # if statement
+
+    (is (== 1 1)
+        # if body
+    ) (else
+        # else body
+    )
+
+    (+ 1 1)
+    (- 1 1)
+    (/ 1 1)
+    (* 1 1)
+
+    # conditions:
+        (== 1 1)
+        (!= 1 1)
+        (>= 1 1)
+        (<= 1 1)
+        (> 1 1)
+        (< 1 1)
+    
+    (- 100) # unary negative
+    (& foo) # C like reference kinda
+    ([foo]) # dereference
+    ([]i32) # array type example
+    ([] 1 2 3 4 5 6 7 8 9 0) # {1, 2, 3, 4, 5, 6, 7, 8, 9, 0} array
+    ({} 17 "epic") # struct creation on the stack
+) # function
